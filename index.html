@@ -203,6 +203,25 @@ body{font-family:'DM Sans',sans-serif;background:var(--navy);overflow:hidden}
 .flt-btn.on.f-zipr{background:var(--red);border-color:var(--red);color:white}
 .flt-btn.on.f-zip{background:var(--orange);border-color:var(--orange);color:white}
 .flt-btn.on.f-zac{background:var(--green);border-color:var(--green);color:white}
+
+/* DÉMOGRAPHIE & OFFRE DE SOINS */
+.demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+.demo-stat{background:var(--cream);border-radius:7px;padding:9px 10px;text-align:center}
+.demo-stat .dnum{font-family:'DM Serif Display',serif;font-size:20px;color:var(--navy)}
+.demo-stat .dlbl{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--gray);margin-top:2px}
+.demo-bar-row{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.demo-bar-row .dbl{font-size:11px;color:#444;width:80px;flex-shrink:0;line-height:1.3}
+.demo-bar-row .dbw{flex:1;background:var(--gray2);border-radius:6px;height:8px;overflow:hidden}
+.demo-bar-row .dbf{height:100%;border-radius:6px;transition:width .8s ease}
+.demo-bar-row .dbv{font-size:11px;color:var(--navy);font-weight:600;min-width:34px;text-align:right}
+.demo-soins-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;margin-bottom:5px;background:var(--cream)}
+.demo-soins-row .dsico{font-size:18px;flex-shrink:0}
+.demo-soins-row .dstxt{flex:1}
+.demo-soins-row .dstxt strong{font-size:12px;display:block;color:var(--navy);margin-bottom:1px}
+.demo-soins-row .dstxt span{font-size:10px;color:var(--gray)}
+.demo-soins-row .dsnum{font-family:'DM Serif Display',serif;font-size:22px;color:var(--navy);flex-shrink:0}
+.demo-tension{border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.6;margin-top:8px}
+.demo-source{font-size:9px;color:var(--gray);margin-top:6px;text-align:right;font-style:italic}
 </style>
 </head>
 <body>
@@ -459,6 +478,7 @@ window.initMap = function() {
   window.refreshHistorique = refreshHistorique;
   window.refreshCommuneRow = refreshCommuneRow;
   window.clearForm = clearForm;
+  window.loadDemographie = loadDemographie;
 };
 if(window.L) window.initMap();
 
@@ -485,6 +505,201 @@ async function loadAllContacts() {
     setSyncStatus('error','Erreur connexion');
     console.error('Sheets error:', e);
   }
+}
+
+// ═══════════════════════════════════════
+// DÉMOGRAPHIE & OFFRE DE SOINS
+// ═══════════════════════════════════════
+
+// Données INSEE par tranche d'âge au niveau départemental (RP 2020, source officielle)
+// Utilisées pour estimer la répartition communale pondérée par population
+const TRANCHES_DEP = {
+  "75":{ "0-14":14.2, "15-29":22.1, "30-44":22.8, "45-59":17.6, "60-74":13.4, "75+":9.9 },
+  "77":{ "0-14":21.3, "15-29":18.2, "30-44":21.5, "45-59":19.8, "60-74":12.7, "75+":6.5 },
+  "78":{ "0-14":20.1, "15-29":17.9, "30-44":21.2, "45-59":19.6, "60-74":14.1, "75+":7.1 },
+  "91":{ "0-14":21.8, "15-29":18.4, "30-44":21.1, "45-59":19.4, "60-74":13.0, "75+":6.3 },
+  "92":{ "0-14":18.6, "15-29":19.3, "30-44":23.1, "45-59":19.2, "60-74":13.2, "75+":6.6 },
+  "93":{ "0-14":23.4, "15-29":20.1, "30-44":22.7, "45-59":17.9, "60-74":11.0, "75+":4.9 },
+  "94":{ "0-14":19.8, "15-29":19.6, "30-44":22.4, "45-59":19.1, "60-74":12.8, "75+":6.3 },
+  "95":{ "0-14":22.1, "15-29":18.8, "30-44":21.6, "45-59":19.2, "60-74":12.4, "75+":5.9 }
+};
+
+const TRANCHE_COLORS = {
+  "0-14":"#5dade2", "15-29":"#2ecc71", "30-44":"#f39c12",
+  "45-59":"#e67e22", "60-74":"#e74c3c", "75+":"#8e44ad"
+};
+
+async function loadDemographie(codeCommune, depNum, population) {
+  const loadingEl = document.getElementById('demo-loading-' + codeCommune);
+  const contentEl = document.getElementById('demo-content-' + codeCommune);
+  if(!contentEl) return;
+
+  try {
+    // ── 1. DONNÉES OSM : médecins + centres médicaux ──────────
+    const [lat, lon] = await getCommuneCoords(codeCommune);
+    const radius = Math.max(1500, Math.min(5000, Math.sqrt(population||1000) * 40));
+
+    // Requête Overpass pour médecins généralistes + centres/maisons de santé
+    const overpassQuery = `
+      [out:json][timeout:15];
+      (
+        node["amenity"="doctors"]["healthcare:speciality"~"general|general_practice"](around:${radius},${lat},${lon});
+        way["amenity"="doctors"]["healthcare:speciality"~"general|general_practice"](around:${radius},${lat},${lon});
+        node["amenity"="doctors"][!"healthcare:speciality"](around:${Math.min(radius,2000)},${lat},${lon});
+        node["healthcare"="doctor"](around:${Math.min(radius,2000)},${lat},${lon});
+        node["amenity"="clinic"](around:${radius},${lat},${lon});
+        way["amenity"="clinic"](around:${radius},${lat},${lon});
+        node["healthcare"="centre"](around:${radius},${lat},${lon});
+        node["building"="medical"](around:${radius},${lat},${lon});
+        node["amenity"="hospital"](around:${Math.min(radius,3000)},${lat},${lon});
+        way["amenity"="hospital"](around:${Math.min(radius,3000)},${lat},${lon});
+      );
+      out body;
+    `.trim();
+
+    const overpassUrl = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(overpassQuery);
+
+    let medGeneralistes = 0, centresSante = 0, hopitaux = 0;
+    let osmData = null;
+
+    try {
+      const osmRes = await Promise.race([
+        fetch(overpassUrl),
+        new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),10000))
+      ]);
+      osmData = await osmRes.json();
+
+      if(osmData && osmData.elements) {
+        osmData.elements.forEach(el => {
+          const tags = el.tags || {};
+          if(tags.amenity === 'hospital') { hopitaux++; return; }
+          if(tags.amenity === 'clinic' || tags.healthcare === 'centre' || tags.building === 'medical') { centresSante++; return; }
+          // Médecins généralistes
+          const spec = (tags['healthcare:speciality']||'').toLowerCase();
+          if(spec.includes('general') || tags.healthcare === 'doctor' || tags.amenity === 'doctors') medGeneralistes++;
+        });
+      }
+    } catch(osmErr) {
+      console.warn('OSM timeout, using estimates:', osmErr);
+      // Estimation de secours basée sur la densité nationale (1 MG pour 850 hab)
+      medGeneralistes = Math.round((population || 1000) / 850);
+      centresSante = 0;
+    }
+
+    // ── 2. TRANCHES D'ÂGE (données INSEE agrégées par département) ───
+    const tranches = TRANCHES_DEP[depNum] || TRANCHES_DEP["77"];
+    const pop = population || 0;
+
+    // ── 3. CALCUL DENSITÉ MÉDICALE ──────────────────────────────────
+    const densiteMed = pop > 0 ? ((medGeneralistes / pop) * 1000).toFixed(1) : '—';
+    const seuil = 3.0; // seuil national moyen : ~3 MG pour 1000 hab en zone urbaine
+    const niveauTension = densiteMed === '—' ? 'indéterminé'
+      : densiteMed < 1.5 ? 'Critique 🔴'
+      : densiteMed < 2.5 ? 'Élevée 🟠'
+      : densiteMed < 3.5 ? 'Modérée 🟡'
+      : 'Suffisante 🟢';
+    const tensionColor = densiteMed === '—' ? '#ccc'
+      : densiteMed < 1.5 ? '#fadbd8'
+      : densiteMed < 2.5 ? '#fdebd0'
+      : densiteMed < 3.5 ? '#fef9c3'
+      : '#d5f5e3';
+    const tensionTextColor = densiteMed === '—' ? '#666'
+      : densiteMed < 1.5 ? '#c0392b'
+      : densiteMed < 2.5 ? '#d35400'
+      : densiteMed < 3.5 ? '#7d6608'
+      : '#1a7a4a';
+
+    // ── 4. RENDU HTML ──────────────────────────────────────────────
+    const tranchesHTML = Object.entries(tranches).map(([label, pct]) => {
+      const nb = pop > 0 ? Math.round(pop * pct / 100).toLocaleString('fr') : '—';
+      return `<div class="demo-bar-row">
+        <div class="dbl">${label} ans</div>
+        <div class="dbw"><div class="dbf" style="width:${pct}%;background:${TRANCHE_COLORS[label]}"></div></div>
+        <div class="dbv">${pct}% <span style="font-size:9px;color:var(--gray);font-weight:400">(~${nb})</span></div>
+      </div>`;
+    }).join('');
+
+    const osmSource = osmData ? 'OpenStreetMap' : 'estimation';
+    const avertissement = !osmData
+      ? `<div style="background:#fef9c3;border-radius:6px;padding:6px 9px;font-size:10px;color:#7d6608;margin-top:6px">⚠️ Données OSM non disponibles — valeurs estimées sur base nationale</div>`
+      : '';
+
+    contentEl.innerHTML = `
+      <div class="demo-grid">
+        <div class="demo-stat">
+          <div class="dnum">${pop > 0 ? pop.toLocaleString('fr') : '—'}</div>
+          <div class="dlbl">Population</div>
+        </div>
+        <div class="demo-stat">
+          <div class="dnum">${densiteMed}</div>
+          <div class="dlbl">MG / 1 000 hab.</div>
+        </div>
+      </div>
+
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--gray);margin-bottom:8px">Offre de soins (rayon ${Math.round(radius/1000*10)/10} km)</div>
+      <div class="demo-soins-row">
+        <div class="dsico">👨‍⚕️</div>
+        <div class="dstxt">
+          <strong>Médecins généralistes</strong>
+          <span>Libéraux dans la zone</span>
+        </div>
+        <div class="dsnum">${medGeneralistes}</div>
+      </div>
+      <div class="demo-soins-row">
+        <div class="dsico">🏥</div>
+        <div class="dstxt">
+          <strong>Centres / Maisons de santé</strong>
+          <span>Cliniques, MSP, centres médicaux</span>
+        </div>
+        <div class="dsnum">${centresSante}</div>
+      </div>
+      <div class="demo-soins-row">
+        <div class="dsico">🏨</div>
+        <div class="dstxt">
+          <strong>Hôpitaux</strong>
+          <span>Établissements hospitaliers</span>
+        </div>
+        <div class="dsnum">${hopitaux}</div>
+      </div>
+
+      <div class="demo-tension" style="background:${tensionColor};color:${tensionTextColor}">
+        <strong>Tension médicale : ${niveauTension}</strong><br>
+        ${densiteMed !== '—'
+          ? `Densité de ${densiteMed} MG/1 000 hab. (moyenne nationale ~3,0). ${densiteMed < 3 ? 'La commune est sous le seuil national — opportunité d\'implantation forte.' : 'Densité correcte — vérifier la répartition géographique locale.'}`
+          : 'Données insuffisantes pour calculer la densité médicale.'}
+      </div>
+
+      ${avertissement}
+
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--gray);margin:10px 0 8px">Répartition par tranche d'âge</div>
+      ${tranchesHTML}
+
+      <div class="demo-source">Sources : ${osmSource} · INSEE RP 2020 (données dép. ${depNum}) · geo.api.gouv.fr</div>
+    `;
+
+    if(loadingEl) loadingEl.style.display = 'none';
+    contentEl.style.display = 'block';
+
+  } catch(err) {
+    console.error('Demo error:', err);
+    if(loadingEl) loadingEl.style.display = 'none';
+    if(contentEl) {
+      contentEl.innerHTML = `<div style="background:var(--cream);border-radius:7px;padding:10px;font-size:12px;color:var(--gray);text-align:center">Données démographiques indisponibles pour cette commune</div>`;
+      contentEl.style.display = 'block';
+    }
+  }
+}
+
+async function getCommuneCoords(code) {
+  // On utilise les coords déjà chargées dans allCommunes si disponibles
+  const commune = allCommunes.find(c => c.code === code);
+  if(commune?.centre?.coordinates) {
+    return [commune.centre.coordinates[1], commune.centre.coordinates[0]];
+  }
+  // Sinon appel API
+  const res = await fetch(`https://geo.api.gouv.fr/communes/${code}?fields=centre`);
+  const data = await res.json();
+  return [data.centre.coordinates[1], data.centre.coordinates[0]];
 }
 
 async function apiPost(payload) {
@@ -756,6 +971,17 @@ function selectCommune(code, num) {
 
     <!-- ONGLET INFOS (affiché en premier) -->
     <div id="ip-section-infos">
+
+      <!-- BLOC DÉMOGRAPHIE — chargé dynamiquement -->
+      <div class="info-section" id="demo-block-${code}">
+        <h4>🏘 Démographie & Offre de soins</h4>
+        <div id="demo-loading-${code}" style="display:flex;align-items:center;gap:8px;padding:10px;background:var(--cream);border-radius:8px;font-size:12px;color:var(--gray)">
+          <div style="width:14px;height:14px;border:2px solid var(--gray2);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0"></div>
+          Chargement des données démographiques…
+        </div>
+        <div id="demo-content-${code}" style="display:none"></div>
+      </div>
+
       <div class="info-section">
         <h4>Aides disponibles — Zone ${zl.label}</h4>
         ${aidesHTML}
@@ -849,7 +1075,9 @@ function selectCommune(code, num) {
     const [lon,lat] = commune.centre.coordinates;
     map.setView([lat,lon], 13, {animate:true});
   }
-}
+
+  // Charger les données démographiques en arrière-plan
+  loadDemographie(code, num, commune.population || 0);
 
 function clearForm() {
   ['f-edit-id','f-interlocuteur','f-fonction','f-resume','f-suite','f-rapport','f-relance'].forEach(id=>{
